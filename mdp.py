@@ -94,6 +94,25 @@ class MDP:
 
         return V
 
+    def occupancy(
+        self, mc_nsamples: int = 1000, mc_max_steps: int = 1000
+    ) -> np.ndarray:
+        episode_indices_sa, _ = self.sample_idx(mc_nsamples, max_steps=mc_max_steps)
+        total = (episode_indices_sa[..., 0] != -1).sum(axis=0)
+        total = total[:-1]  # remove terminal state
+
+        occup = np.zeros((len(self.states), len(self.actions), mc_max_steps))
+        for i in range(mc_nsamples):
+            for t in range(mc_max_steps):
+                s, a = episode_indices_sa[i, t]
+                if s == -1:
+                    break
+                occup[s, a, t] += 1
+
+        occup_re = np.power(self.gamma, np.arange(mc_max_steps)) * occup
+        mask = total > 0
+        return (1 - self.gamma) * np.sum(occup_re[..., mask] / total[mask], axis=-1)
+
     def sample_idx(
         self,
         n_samples: int,
@@ -186,23 +205,21 @@ if __name__ == "__main__":
     policy1[[0, 0, 1, 1, 2, 2, 3, 3], [0, 2, 1, 3, 4, 5, 5, 6]] = 0.5
     mdp.set_policy(policy1)
     print("the values of policy 1: ", mdp.values())
-
-    # policy2 = np.zeros((5, 7))
-    # policy2[0, 0] = 0.6
-    # policy2[0, 2] = 0.4
-    # policy2[1, 1] = 0.3
-    # policy2[1, 3] = 0.7
-    # policy2[2, 4] = 0.5
-    # policy2[2, 5] = 0.5
-    # policy2[3, 5] = 0.1
-    # policy2[3, 6] = 0.9
-    # mdp.set_policy(policy2)
-    # print("the values of policy 2: ", mdp.values())
-
-    mdp.set_policy(policy1)
-    episode_indices_sa, episode_indices_r = mdp.sample_idx(5, None, 20)
-    # print(episode_indices)
-    mdp.print_episode(episode_indices_sa[0], episode_indices_r[0])
-    mdp.print_episode(episode_indices_sa[1], episode_indices_r[1])
-    mdp.print_episode(episode_indices_sa[2], episode_indices_r[2])
     print("the values of policy 1 (using mc): ", mdp.values("mc"))
+    print("the occupancy of policy 1 (using mc): ")
+    print(mdp.occupancy(1000, 1000))
+
+    policy2 = np.zeros((5, 7))
+    policy2[0, 0] = 0.6
+    policy2[0, 2] = 0.4
+    policy2[1, 1] = 0.3
+    policy2[1, 3] = 0.7
+    policy2[2, 4] = 0.5
+    policy2[2, 5] = 0.5
+    policy2[3, 5] = 0.1
+    policy2[3, 6] = 0.9
+    mdp.set_policy(policy2)
+    print("the values of policy 2: ", mdp.values())
+    print("the values of policy 2 (using mc): ", mdp.values("mc"))
+    print("the occupancy of policy 2 (using mc): ")
+    print(mdp.occupancy(1000, 1000))
