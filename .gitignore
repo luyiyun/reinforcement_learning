@@ -10,3 +10,8 @@ wheels/
 .venv
 
 *.png
+*.gif
+*.jpg
+*.jpeg
+*.svg
+*.ico
