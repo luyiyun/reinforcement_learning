@@ -135,54 +135,61 @@ def mc_control(
     return policy, Q, np.array(reward_history)
 
 
-env = gym.make("FrozenLake-v1", desc=None, map_name="4x4", is_slippery=False)
-# simple_policy = np.array([2, 2, 1, 0, 2, 1, 0, 0, 2, 0, 0, 0, 2, 2, 1])
-# Q = mc_policy_evaluation(env, simple_policy, num_episodes=2000, gamma=0.9)
-# print(Q)
-# Q = mc_policy_evaluation(
-#     env, simple_policy, num_episodes=2000, gamma=0.9, method="fvmc"
-# )
-# print(Q)
+if __name__ == "__main__":
+    env = gym.make("FrozenLake-v1", desc=None, map_name="4x4", is_slippery=False)
+    simple_policy = np.array([2, 2, 1, 0, 2, 1, 0, 0, 2, 0, 0, 0, 2, 2, 1])
+    Q = mc_policy_evaluation(env, simple_policy, num_episodes=2000, gamma=0.9)
+    print(Q)
+    Q = mc_policy_evaluation(
+        env, simple_policy, num_episodes=2000, gamma=0.9, method="fvmc"
+    )
+    print(Q)
 
-policy, Q, episode_rewards = mc_control(
-    env, 5000, gamma=0.99, epsilon=1.0, epsilon_decay=0.999, epsilon_min=0.01, seed=0
-)
-print(policy)
-print(Q)
-print(episode_rewards)
-print(np.array([["⬅️", "⬇️", "➡️", "⬆️"][i] for i in policy]).reshape(4, 4))
+    policy, Q, episode_rewards = mc_control(
+        env,
+        5000,
+        gamma=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.999,
+        epsilon_min=0.01,
+        seed=0,
+    )
+    print(policy)
+    print(Q)
+    print(episode_rewards)
+    print(np.array([["⬅️", "⬇️", "➡️", "⬆️"][i] for i in policy]).reshape(4, 4))
 
-# env = gym.make(
-#     "FrozenLake-v1",
-#     desc=None,
-#     map_name="4x4",
-#     is_slippery=False,
-#     render_mode="rgb_array_list",
-# )
-# observation, info = env.reset()
-# episode_over = False
-# while not episode_over:
-#     action = policy[observation]
-#     observation, reward, terminated, truncated, info = env.step(action)
-#     episode_over = terminated or truncated
-# img_list = env.render()
-# env.close()
-# imageio.mimsave("./results/frozen_lake_mc.gif", img_list, duration=0.5, loop=0)
+    env = gym.make(
+        "FrozenLake-v1",
+        desc=None,
+        map_name="4x4",
+        is_slippery=False,
+        render_mode="rgb_array_list",
+    )
+    observation, info = env.reset()
+    episode_over = False
+    while not episode_over:
+        action = policy[observation]
+        observation, reward, terminated, truncated, info = env.step(action)
+        episode_over = terminated or truncated
+    img_list = env.render()
+    env.close()
+    imageio.mimsave("./results/frozen_lake_mc.gif", img_list, duration=0.5, loop=0)
 
-# 计算reward的滑动平均
-# window_size = 500
-# moving_avg = np.convolve(
-#     episode_rewards, np.ones(window_size) / window_size, mode="valid"
-# )
-# plt.plot(episode_rewards, label="Episode Rewards", color="blue", alpha=0.3)
-# plt.plot(
-#     np.arange(window_size - 1, len(episode_rewards)),
-#     moving_avg,
-#     label=f"Moving Average (window {window_size})",
-#     color="red",
-# )
-# plt.xlabel("Episode")
-# plt.ylabel("Total Reward")
-# plt.legend()
-# plt.savefig("./results/frozen_lake_mc_history.png")
-# plt.show()
+    # 计算reward的滑动平均
+    window_size = 500
+    moving_avg = np.convolve(
+        episode_rewards, np.ones(window_size) / window_size, mode="valid"
+    )
+    plt.plot(episode_rewards, label="Episode Rewards", color="blue", alpha=0.3)
+    plt.plot(
+        np.arange(window_size - 1, len(episode_rewards)),
+        moving_avg,
+        label=f"Moving Average (window {window_size})",
+        color="red",
+    )
+    plt.xlabel("Episode")
+    plt.ylabel("Total Reward")
+    plt.legend()
+    plt.savefig("./results/frozen_lake_mc_history.png")
+    plt.show()
