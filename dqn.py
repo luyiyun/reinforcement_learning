@@ -11,8 +11,6 @@ from tqdm import tqdm
 import imageio
 import matplotlib.pyplot as plt
 
-from utils import plot_rewards_history
-
 
 class DQNNet(nn.Module):
     def __init__(
@@ -108,6 +106,8 @@ class DQN:
     batch_size: int = 128
     device: str = "cpu"
     soft_update_tau: float | None = None
+    early_stop_target: float | None = None
+    early_stop_interval: int = 100
 
     def _get_n_inputs(self, space: gym.Space) -> int:
         if isinstance(space, gym.spaces.Discrete):
@@ -133,6 +133,7 @@ class DQN:
                 )
             else:
                 raise NotImplementedError
+            self.online_net.eval()
             with torch.no_grad():
                 q_values = self.online_net(state)
             return q_values.argmax().item()
@@ -244,10 +245,18 @@ class DQN:
 
             episode_loss /= step
             tqdm.write(
-                f"Episode {episode}: reward={episode_reward}, loss={episode_loss}"
+                f"Episode {episode}: reward={episode_reward}, loss={episode_loss}, epsilon={epsilon}"
             )
             self.history["total_reward"].append(episode_reward)
             self.history["loss"].append(episode_loss)
+
+            if self.early_stop_target is not None:
+                score = np.mean(
+                    self.history["total_reward"][-self.early_stop_interval :]
+                )
+                if episode > 100 and score >= self.early_stop_target:
+                    tqdm.write(f"Early stop at episode {episode}, score={score}")
+                    break
 
             epsilon = max(epsilon * self.epsilon_decay, self.epsilon_min)
 
@@ -259,13 +268,14 @@ if __name__ == "__main__":
     model = DQN(
         device="cuda",
         soft_update_tau=1e-3,
-        n_episodes=5000,
+        n_episodes=2000,
+        early_stop_target=250,
     )
     model.fit(env)
 
     # plot the total reward and loss history
     historys = model.history
-    window_size = 100
+    window_size = 50
     fig, axs = plt.subplots(ncols=len(historys), figsize=(4 * len(historys), 4))
     for i, (key, arri) in enumerate(historys.items()):
         axs[i].plot(arri, label="True values", alpha=0.3)
@@ -283,13 +293,16 @@ if __name__ == "__main__":
 
     # generate a video of the agent playing the game
     env = gym.make("LunarLander-v3", render_mode="rgb_array_list")
-    state, _ = env.reset()
-    while True:
-        action = model(env, state)
-        next_state, reward, terminated, truncated, _ = env.step(action)
-        if terminated or truncated:
-            break
-    img_list = env.render()
+    img_list = []
+    for i in range(5):
+        state, _ = env.reset()
+        while True:
+            action = model(env, state)
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            if terminated or truncated:
+                break
+            state = next_state
+        img_list.extend(env.render())
     env.close()
     imageio.mimsave(
         "./results/lunar_lander_dqn_video.gif", img_list, duration=0.5, loop=0
