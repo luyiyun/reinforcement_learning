@@ -5,13 +5,23 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "gymnasium[toy-text]>=1.1.1",
+    "gymnasium[all,toy-text]>=1.1.1",
     "imageio>=2.37.0",
     "ipdb>=0.13.13",
     "matplotlib>=3.10.1",
     "numpy>=2.2.3",
     "pandas>=2.2.3",
     "seaborn>=0.13.2",
+    "swig>=4.3.1",
     "torch>=2.7.1",
     "tqdm>=4.67.1",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "platform_system == 'Windows'" }]
+# 这里还进行了平台方面的设置
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true                                # 这一行是必须的，这让安装包的时候只有torch会从这个index中搜索

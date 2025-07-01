@@ -10,12 +10,31 @@ def plot_rewards_history(
         moving_avg = np.convolve(
             rewards_history, np.ones(window_size) / window_size, mode="valid"
         )
-        # ax.plot(rewards_history, label="Episode Rewards", alpha=0.3)
         ax.plot(
             np.arange(window_size - 1, len(rewards_history)),
             moving_avg,
             label=key,
         )
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Total Reward")
+    ax.legend()
+    return fig, ax
+
+
+def plot_reward_history(
+    rewards_history: np.ndarray,
+    window_size: int = 500,
+):
+    fig, ax = plt.subplots()
+    moving_avg = np.convolve(
+        rewards_history, np.ones(window_size) / window_size, mode="valid"
+    )
+    ax.plot(
+        np.arange(window_size - 1, len(rewards_history)),
+        moving_avg,
+        label=f"Moving Average Reward ({window_size})",
+    )
+    ax.plot(rewards_history, label="True Reward", alpha=0.3)
     ax.set_xlabel("Episode")
     ax.set_ylabel("Total Reward")
     ax.legend()
