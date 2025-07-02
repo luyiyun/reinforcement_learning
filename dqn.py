@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from collections import deque
 import random
+import os.path as osp
+import os
 
 import numpy as np
 import gymnasium as gym
@@ -10,6 +12,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import imageio
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 class DQNNet(nn.Module):
@@ -108,6 +111,7 @@ class DQN:
     soft_update_tau: float | None = None
     early_stop_target: float | None = None
     early_stop_interval: int = 100
+    double_dqn: bool = False
 
     def _get_n_inputs(self, space: gym.Space) -> int:
         if isinstance(space, gym.spaces.Discrete):
@@ -170,11 +174,21 @@ class DQN:
         q_pred = q_pred_all.gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # 2. 计算目标Q值 (Target Q-values)
+        inpt = next_states.reshape(-1, self._n_inputs)
         with torch.no_grad():  # 目标值的计算不涉及梯度
-            # 使用目标网络计算下一个状态的所有动作的Q值
-            next_q_values = self.target_net(next_states.reshape(-1, self._n_inputs))
-            # 选择其中最大的Q值作为下一个状态的价值
-            next_q_value = next_q_values.max(dim=1)[0]
+            if self.double_dqn:
+                # 使用 online_net 选择下一个状态的动作，再使用 target_net 计算下一个状态的Q值
+                next_actions = self.online_net(inpt).argmax(dim=1)
+                next_q_value = (
+                    self.target_net(inpt)
+                    .gather(1, next_actions.unsqueeze(1))
+                    .squeeze(1)
+                )
+            else:
+                # 使用目标网络计算下一个状态的所有动作的Q值
+                next_q_values = self.target_net(inpt)
+                # 选择其中最大的Q值作为下一个状态的价值
+                next_q_value = next_q_values.max(dim=1)[0]
             # 如果是终止状态，则下一个状态的价值为0
             next_q_value[dones] = 0.0
             # 计算贝尔曼目标
@@ -264,14 +278,19 @@ class DQN:
 
 
 if __name__ == "__main__":
+    results_root = "./results/doubleDQN"
+    os.makedirs(results_root, exist_ok=True)
+
     env = gym.make("LunarLander-v3")
     model = DQN(
         device="cuda",
         soft_update_tau=1e-3,
         n_episodes=2000,
         early_stop_target=250,
+        double_dqn=True,
     )
     model.fit(env)
+    pd.DataFrame(model.history).to_csv(osp.join(results_root, "history.csv"))
 
     # plot the total reward and loss history
     historys = model.history
@@ -289,7 +308,7 @@ if __name__ == "__main__":
         axs[i].set_ylabel(key)
         axs[i].legend()
     fig.tight_layout()
-    fig.savefig("./results/lunar_lander_dqn_history.png")
+    fig.savefig(osp.join(results_root, "lunar_lander_dqn_history.png"))
 
     # generate a video of the agent playing the game
     env = gym.make("LunarLander-v3", render_mode="rgb_array_list")
@@ -305,5 +324,8 @@ if __name__ == "__main__":
         img_list.extend(env.render())
     env.close()
     imageio.mimsave(
-        "./results/lunar_lander_dqn_video.gif", img_list, duration=0.5, loop=0
+        osp.join(results_root, "lunar_lander_dqn_video.gif"),
+        img_list,
+        duration=0.5,
+        loop=0,
     )
