@@ -15,31 +15,73 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
+def get_mlp(
+    n_inputs: int,
+    n_outputs: int,
+    hiddens: tuple[int, ...],
+    bn: bool = False,
+    dp: float = 0.0,
+    last_only_linear: bool = True,
+) -> nn.Module:
+    layers = []
+    if bn:
+        layers.append(nn.BatchNorm1d(n_inputs))
+    for i, o in zip([n_inputs] + list(hiddens)[:-1], hiddens):
+        layers.append(nn.Linear(i, o))
+        if bn:
+            layers.append(nn.BatchNorm1d(o))
+        layers.append(nn.ReLU())
+        if dp > 0.0:
+            layers.append(nn.Dropout(dp))
+    layers.append(nn.Linear(hiddens[-1], n_outputs))
+    if not last_only_linear:
+        if bn:
+            layers.append(nn.BatchNorm1d(n_outputs))
+        layers.append(nn.ReLU())
+        if dp > 0.0:
+            layers.append(nn.Dropout(dp))
+    return nn.Sequential(*layers)
+
+
 class DQNNet(nn.Module):
     def __init__(
         self,
         n_inputs: int,
         n_outputs: int,
         hiddens: tuple[int, ...],
+        dueling_hiddens: tuple[int, ...] = (),
         bn: bool = False,
         dropout: float = 0.0,
     ):
         super().__init__()
-        layers = []
-        if bn:
-            layers.append(nn.BatchNorm1d(n_inputs))
-        for i, o in zip([n_inputs] + list(hiddens)[:-1], hiddens):
-            layers.append(nn.Linear(i, o))
-            if bn:
-                layers.append(nn.BatchNorm1d(o))
-            layers.append(nn.ReLU())
-            if dropout > 0.0:
-                layers.append(nn.Dropout(dropout))
-        layers.append(nn.Linear(hiddens[-1], n_outputs))
-        self.layers = nn.Sequential(*layers)
+        self._flag_dueling = bool(dueling_hiddens)
+        self.encoder = get_mlp(
+            n_inputs, hiddens[-1], hiddens[:-1], bn, dropout, last_only_linear=False
+        )
+        if self._flag_dueling:
+            self.value_head = get_mlp(
+                hiddens[-1], 1, dueling_hiddens, bn, dropout, last_only_linear=True
+            )
+            self.advantage_head = get_mlp(
+                hiddens[-1],
+                n_outputs,
+                dueling_hiddens,
+                bn,
+                dropout,
+                last_only_linear=True,
+            )
+        else:
+            self.advantage_head = nn.Linear(hiddens[-1], n_outputs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.layers(x)
+        z = self.encoder(x)
+        if self._flag_dueling:
+            v = self.value_head(z)
+            a = self.advantage_head(z)
+            q = v + (a - a.mean(dim=1, keepdim=True))
+        else:
+            q = self.advantage_head(z)
+        return q
 
 
 @dataclass
@@ -97,6 +139,7 @@ class DQN:
     hiddens: tuple[int, ...] = (64, 64)
     bn: bool = False
     dropout: float = 0.0
+    dueling_hiddens: tuple[int, ...] = ()
     learning_rate: float = 1e-3
     gamma: float = 0.99
     buffer_size: int = 10000
@@ -217,10 +260,20 @@ class DQN:
         self._n_outputs = env.action_space.n
 
         self.online_net = DQNNet(
-            self._n_inputs, self._n_outputs, self.hiddens, self.bn, self.dropout
+            self._n_inputs,
+            self._n_outputs,
+            self.hiddens,
+            self.dueling_hiddens,
+            self.bn,
+            self.dropout,
         ).to(self.device)
         self.target_net = DQNNet(
-            self._n_inputs, self._n_outputs, self.hiddens, self.bn, self.dropout
+            self._n_inputs,
+            self._n_outputs,
+            self.hiddens,
+            self.dueling_hiddens,
+            self.bn,
+            self.dropout,
         ).to(self.device)
         self.update_target_net()
         self.target_net.eval()
@@ -278,7 +331,7 @@ class DQN:
 
 
 if __name__ == "__main__":
-    results_root = "./results/doubleDQN"
+    results_root = "./results/duelingDQN"
     os.makedirs(results_root, exist_ok=True)
 
     env = gym.make("LunarLander-v3")
@@ -287,7 +340,8 @@ if __name__ == "__main__":
         soft_update_tau=1e-3,
         n_episodes=2000,
         early_stop_target=250,
-        double_dqn=True,
+        # double_dqn=True,
+        dueling_hiddens=(64,),
     )
     model.fit(env)
     pd.DataFrame(model.history).to_csv(osp.join(results_root, "history.csv"))
