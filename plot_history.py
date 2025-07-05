@@ -8,6 +8,7 @@ if __name__ == "__main__":
         "DQN": "./results/DQN/history.csv",
         "Double DQN": "./results/doubleDQN/history.csv",
         "Dueling DQN": "./results/duelingDQN/history.csv",
+        "PER DQN": "./results/PER/history.csv",
     }
 
     df = {}

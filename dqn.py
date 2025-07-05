@@ -143,11 +143,15 @@ class SumTree:
     它不是一个标准的面向对象的树实现，而是使用一个数组来表示树结构，以提高效率。
     Tree structure and array storage:
     Tree:
-               0
-              / \
-             1   2
-            / \ / \
-            3  4 5  6
+            0
+            |
+        +----+----+
+        |         |
+        1         2
+        |         |
+        +--+--+   +--+--+
+        |     |   |     |
+        3     4   5     6
     Array: [0, 1, 2, 3, 4, 5, 6]
     索引关系:
     - 父节点索引: (i - 1) // 2
@@ -237,8 +241,7 @@ class PrioritizedReplayBuffer:
         Args:
             capacity (int): 缓冲区最大容量。
             alpha (float): 优先级指数。alpha=0表示均匀采样，alpha=1表示完全按优先级采样。
-            beta (float): 重要性采样权重指数。beta=0表示无校正，beta=1表示完全校正。
-                         beta会从初始值线性退火到1.0。
+            beta (float): 重要性采样权重指数。beta=0表示无校正，beta=1表示完全校正。 beta会从初始值线性退火到1.0。
             beta_increment_per_sampling (float): 每次采样后beta的增量。
         """
         self.tree = SumTree(self.capacity)
@@ -375,9 +378,9 @@ class DQN:
 
     def _get_n_inputs(self, space: gym.Space) -> int:
         if isinstance(space, gym.spaces.Discrete):
-            return space.n
+            return int(space.n)
         elif isinstance(space, gym.spaces.Box):
-            return np.prod(space.shape)
+            return int(np.prod(space.shape))
         elif isinstance(space, gym.spaces.Tuple):
             return sum(self._get_n_inputs(s) for s in space.spaces)
         else:
@@ -390,7 +393,7 @@ class DQN:
             return env.action_space.sample()
         else:
             if isinstance(state, np.ndarray):
-                state = (
+                state_tensor = (
                     torch.tensor(state, dtype=torch.float32)
                     .unsqueeze(0)
                     .to(self.device)
@@ -399,7 +402,7 @@ class DQN:
                 raise NotImplementedError
             self.online_net.eval()
             with torch.no_grad():
-                q_values = self.online_net(state)
+                q_values = self.online_net(state_tensor)
             return q_values.argmax().item()
 
     def update_target_net(self):
@@ -479,7 +482,7 @@ class DQN:
             "DQN only supports Discrete action spaces"
         )
         self._n_inputs = self._get_n_inputs(env.observation_space)
-        self._n_outputs = env.action_space.n
+        self._n_outputs = int(env.action_space.n)
 
         self.online_net = DQNNet(
             self._n_inputs,
