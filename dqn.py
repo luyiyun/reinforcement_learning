@@ -111,7 +111,7 @@ class ReplayBuffer:
             self.state_is_array = isinstance(state, np.ndarray)
         self.buffer.append((state, action, reward, next_state, done))
 
-    def sample(self, batch_size: int):
+    def sample(self, batch_size: int) -> dict[str, np.ndarray]:
         """从缓冲区中随机采样一个批次的经验。"""
         # 从缓冲区中随机选择 batch_size 个样本
         samples = random.sample(self.buffer, batch_size)
@@ -119,19 +119,232 @@ class ReplayBuffer:
         # 将样本解压并堆叠成批次
         states, actions, rewards, next_states, dones = zip(*samples)
 
-        return (
-            np.stack(states, axis=0) if self.state_is_array else np.array(states),
-            np.array(actions),
-            np.array(rewards, dtype=np.float32),
-            np.stack(next_states, axis=0)
+        return {
+            "states": np.stack(states, axis=0)
+            if self.state_is_array
+            else np.array(states),
+            "actions": np.array(actions),
+            "rewards": np.array(rewards, dtype=np.float32),
+            "next_states": np.stack(next_states, axis=0)
             if self.state_is_array
             else np.array(next_states),
-            np.array(dones, dtype=bool),
-        )
+            "dones": np.array(dones, dtype=bool),
+        }
 
     def __len__(self):
         """返回当前缓冲区中的样本数量。"""
         return len(self.buffer)
+
+
+@dataclass
+class SumTree:
+    """
+    SumTree 数据结构，用于实现高效的带优先级采样。
+    它不是一个标准的面向对象的树实现，而是使用一个数组来表示树结构，以提高效率。
+    Tree structure and array storage:
+    Tree:
+               0
+              / \
+             1   2
+            / \ / \
+            3  4 5  6
+    Array: [0, 1, 2, 3, 4, 5, 6]
+    索引关系:
+    - 父节点索引: (i - 1) // 2
+    - 左子节点索引: 2 * i + 1
+    - 右子节点索引: 2 * i + 2
+    """
+
+    capacity: int
+
+    def __post_init__(self):
+        # 树的节点总数 = 2 * capacity - 1
+        # 例如 capacity=4, 节点数为7 (0-6)
+        # 节点 0,1,2 为非叶子节点，节点 3,4,5,6 为叶子节点
+        self.tree = np.zeros(2 * self.capacity - 1)
+        # 实际数据存储在叶子节点，从 tree[capacity - 1] 开始
+        self.write_ptr = 0  # 指向下一个要写入的叶子节点的索引
+
+    def _propagate(self, idx: int, change: float):
+        """从指定索引向上更新父节点的值。"""
+        parent_idx = (idx - 1) // 2
+        self.tree[parent_idx] += change
+        if parent_idx != 0:
+            self._propagate(parent_idx, change)
+
+    def _retrieve(self, idx: int, s: float) -> int:
+        """根据采样值 s 查找对应的叶子节点索引。"""
+        left_child_idx = 2 * idx + 1
+        right_child_idx = left_child_idx + 1
+
+        # 如果到达叶子节点，则返回当前索引
+        if left_child_idx >= len(self.tree):
+            return idx
+
+        if s <= self.tree[left_child_idx]:
+            return self._retrieve(left_child_idx, s)
+        else:
+            return self._retrieve(right_child_idx, s - self.tree[left_child_idx])
+
+    @property
+    def total_p(self) -> float:
+        """返回所有优先级的总和（即根节点的值）。"""
+        return self.tree[0]
+
+    def add(self, p: float):
+        """
+        向树中添加一个新的优先级。
+        总是从 self.write_ptr 指向的位置开始写入，实现循环缓冲区的效果。
+        """
+        # 找到要写入的叶子节点的索引
+        tree_idx = self.write_ptr + self.capacity - 1
+
+        # 更新树
+        self.update(tree_idx, p)
+
+        # 更新写入指针
+        self.write_ptr = (self.write_ptr + 1) % self.capacity
+
+    def update(self, tree_idx: int, p: float):
+        """根据树的索引更新一个叶子节点的优先级。"""
+        change = p - self.tree[tree_idx]
+        self.tree[tree_idx] = p
+        self._propagate(tree_idx, change)
+
+    def get_leaf(self, s: float) -> tuple[int, float]:
+        """
+        根据采样值 s 获取叶子节点。
+        返回: (叶子节点的索引, 该叶子的优先级值)
+        """
+        idx = self._retrieve(0, s)
+        priority = self.tree[idx]
+        return idx, priority
+
+
+@dataclass
+class PrioritizedReplayBuffer:
+    capacity: int
+    alpha: float = 0.6
+    beta: float = 0.4
+    beta_increment_per_sampling: float = 0.001
+    epsilon = 1e-5  # 防止TD误差为0时优先级为0
+    max_priority = 1.0  # 新经验的初始优先级，确保它们至少有一次被采样的机会
+
+    def __post_init__(self):
+        """
+        初始化优先经验回放缓冲区。
+
+        Args:
+            capacity (int): 缓冲区最大容量。
+            alpha (float): 优先级指数。alpha=0表示均匀采样，alpha=1表示完全按优先级采样。
+            beta (float): 重要性采样权重指数。beta=0表示无校正，beta=1表示完全校正。
+                         beta会从初始值线性退火到1.0。
+            beta_increment_per_sampling (float): 每次采样后beta的增量。
+        """
+        self.tree = SumTree(self.capacity)
+
+        # 使用一个独立的numpy数组存储实际的经验元组 (s, a, r, s', done)
+        self.data = np.zeros(self.capacity, dtype=object)
+
+        # 指针和大小
+        self.write_ptr = 0
+        self.size = 0
+        self.state_is_array = None
+
+    def push(self, state, action, reward, next_state, done):
+        """将一个经验元组存入缓冲区。"""
+        # 1. 存储经验数据
+        if self.state_is_array is None:
+            self.state_is_array = isinstance(state, np.ndarray)
+        experience = (state, action, reward, next_state, done)
+        self.data[self.write_ptr] = experience
+
+        # 2. 在SumTree中为新经验设置最大优先级
+        self.tree.add(self.max_priority)
+
+        # 3. 更新指针和大小
+        self.write_ptr = (self.write_ptr + 1) % self.capacity
+        if self.size < self.capacity:
+            self.size += 1
+
+    def sample(self, batch_size: int) -> dict[str, np.ndarray]:
+        """
+        从缓冲区中采样一个批次的经验。
+
+        Returns:
+            batch (list): 经验元组的列表。
+            indices (np.array): 采样的经验在SumTree中的索引，用于后续更新优先级。
+            is_weights (np.array): 对应的重要性采样权重。
+        """
+        batch = []
+        indices = np.empty((batch_size,), dtype=np.int32)
+        is_weights = np.empty((batch_size,), dtype=np.float32)
+
+        # 1. 计算采样分段
+        total_p = self.tree.total_p
+        segment = total_p / batch_size
+
+        # 2. 对beta进行退火，使其逐渐趋近1.0
+        self.beta = min(1.0, self.beta + self.beta_increment_per_sampling)
+
+        # 3. 进行分层采样
+        for i in range(batch_size):
+            a = segment * i
+            b = segment * (i + 1)
+            s = random.uniform(a, b)
+
+            # 从SumTree中获取叶子节点
+            (tree_idx, priority) = self.tree.get_leaf(s)
+
+            # 计算采样概率和重要性采样权重
+            sampling_prob = priority / total_p
+            is_weights[i] = (self.size * sampling_prob) ** -self.beta
+
+            # 存储索引和经验
+            indices[i] = tree_idx
+            # data_idx 与 tree.write_ptr 的逻辑是独立的，tree中前面还有父节点，所以需要减去capacity-1
+            data_idx = tree_idx - self.capacity + 1
+            batch.append(self.data[data_idx])
+
+        # 4. 归一化权重以稳定训练
+        is_weights /= is_weights.max()
+
+        # 5. 解压批次数据
+        states, actions, rewards, next_states, dones = zip(*batch)
+
+        return {
+            "states": np.stack(states, axis=0)
+            if self.state_is_array
+            else np.array(states),
+            "actions": np.array(actions),
+            "rewards": np.array(rewards, dtype=np.float32),
+            "next_states": np.stack(next_states, axis=0)
+            if self.state_is_array
+            else np.array(next_states),
+            "dones": np.array(dones, dtype=bool),
+            "indices": indices,
+            "is_weights": is_weights,
+        }
+
+    def batch_update(self, tree_indices: np.ndarray, abs_td_errors: np.ndarray):
+        """
+        在一次学习后，根据新的TD误差批量更新经验的优先级。
+
+        Args:
+            tree_indices (np.array): `sample`方法返回的树索引。
+            abs_td_errors (np.array): 对应经验的绝对TD误差。
+        """
+        # 加上一个小的epsilon防止优先级为0
+        priorities = (abs_td_errors + self.epsilon) ** self.alpha
+
+        # 确保优先级不会超过设定的最大值
+        clipped_priorities = np.minimum(priorities, self.max_priority)
+
+        for idx, p in zip(tree_indices, clipped_priorities):
+            self.tree.update(idx, p)
+
+    def __len__(self):
+        return self.size
 
 
 @dataclass
@@ -155,6 +368,10 @@ class DQN:
     early_stop_target: float | None = None
     early_stop_interval: int = 100
     double_dqn: bool = False
+    prioritized_replay: bool = False
+    per_alpha: float = 0.6
+    per_beta: float = 0.4
+    per_beta_increment_per_sampling: float = 0.001
 
     def _get_n_inputs(self, space: gym.Space) -> int:
         if isinstance(space, gym.spaces.Discrete):
@@ -197,11 +414,15 @@ class DQN:
                     + self.soft_update_tau * online_param.data
                 )
 
-    def train(
-        self, batch: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-    ) -> float:
+    def train(self, batch: dict[str, np.ndarray]) -> tuple[float, torch.Tensor]:
         # 从缓冲区采样
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones = (
+            batch["states"],
+            batch["actions"],
+            batch["rewards"],
+            batch["next_states"],
+            batch["dones"],
+        )
 
         # 将 numpy 数组转换为 torch 张量
         states = torch.tensor(states, device=self.device, dtype=torch.float32)
@@ -238,7 +459,8 @@ class DQN:
             y_target = rewards + self.gamma * next_q_value
 
         # 3. 计算损失
-        loss = self.loss_fn(q_pred, y_target)
+        td_error = y_target - q_pred
+        loss = td_error.pow(2).mean()
 
         # 4. 优化模型
         self.optimizer.zero_grad()
@@ -250,7 +472,7 @@ class DQN:
         if self.learn_step_counter % self.target_update_frequency == 0:
             self.update_target_net()
 
-        return loss.item()
+        return loss.item(), td_error
 
     def fit(self, env: gym.Env):
         assert isinstance(env.action_space, gym.spaces.Discrete), (
@@ -283,7 +505,15 @@ class DQN:
         self.optimizer = optim.Adam(self.online_net.parameters(), lr=self.learning_rate)
         self.loss_fn = torch.nn.MSELoss()
 
-        self.replay_buffer = ReplayBuffer(self.buffer_size)
+        if self.prioritized_replay:
+            self.replay_buffer = PrioritizedReplayBuffer(
+                self.buffer_size,
+                alpha=self.per_alpha,
+                beta=self.per_beta,
+                beta_increment_per_sampling=self.per_beta_increment_per_sampling,
+            )
+        else:
+            self.replay_buffer = ReplayBuffer(self.buffer_size)
 
         self.learn_step_counter = 0
         self.history = {"loss": [], "total_reward": []}
@@ -302,7 +532,11 @@ class DQN:
                 # 当缓冲区有足够数据时开始学习
                 if len(self.replay_buffer) > self.batch_size:
                     batch = self.replay_buffer.sample(self.batch_size)
-                    loss = self.train(batch)
+                    loss, td_error = self.train(batch)
+                    if self.prioritized_replay:
+                        self.replay_buffer.batch_update(
+                            batch["indices"], td_error.detach().abs().cpu().numpy()
+                        )
                     episode_loss += loss
 
                 episode_reward += reward
@@ -331,7 +565,7 @@ class DQN:
 
 
 if __name__ == "__main__":
-    results_root = "./results/duelingDQN"
+    results_root = "./results/PER"
     os.makedirs(results_root, exist_ok=True)
 
     env = gym.make("LunarLander-v3")
@@ -341,7 +575,8 @@ if __name__ == "__main__":
         n_episodes=2000,
         early_stop_target=250,
         # double_dqn=True,
-        dueling_hiddens=(64,),
+        # dueling_hiddens=(64,),
+        prioritized_replay=True,
     )
     model.fit(env)
     pd.DataFrame(model.history).to_csv(osp.join(results_root, "history.csv"))
